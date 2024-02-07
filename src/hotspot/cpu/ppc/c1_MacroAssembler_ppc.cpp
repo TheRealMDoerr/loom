@@ -116,6 +116,7 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
 
   if (LockingMode == LM_LIGHTWEIGHT) {
     lightweight_lock(Roop, Rmark, Rscratch, slow_int);
+    b(done);
   } else if (LockingMode == LM_LEGACY) {
     // ... and mark it unlocked.
     ori(Rmark, Rmark, markWord::unlocked_value);
@@ -137,8 +138,8 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
              /*check without membar and ldarx first*/true);
     // If compare/exchange succeeded we found an unlocked object and we now have locked it
     // hence we are done.
+    b(count_locking);
   }
-  b(count_locking);
 
   bind(slow_int);
   b(slow_case); // far
@@ -152,10 +153,11 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
     std(R0/*==0, perhaps*/, BasicLock::displaced_header_offset_in_bytes(), Rbox);
     beq(CCR0, done);
     b(slow_case); // far
+
+    bind(count_locking);
+    inc_held_monitor_count(Rmark /*tmp*/);
   }
 
-  bind(count_locking);
-  inc_held_monitor_count(Rmark /*tmp*/);
   bind(done);
 }
 
@@ -184,6 +186,7 @@ void C1_MacroAssembler::unlock_object(Register Rmark, Register Roop, Register Rb
     andi_(R0, Rmark, markWord::monitor_value);
     bne(CCR0, slow_int);
     lightweight_unlock(Roop, Rmark, slow_int);
+    b(done);
   } else if (LockingMode == LM_LEGACY) {
     // Check if it is still a light weight lock, this is is true if we see
     // the stack address of the basicLock in the markWord of the object.
@@ -196,14 +199,16 @@ void C1_MacroAssembler::unlock_object(Register Rmark, Register Roop, Register Rb
              MacroAssembler::cmpxchgx_hint_release_lock(),
              noreg,
              &slow_int);
+    b(count_locking);
   }
-  b(count_locking);
   bind(slow_int);
   b(slow_case); // far
 
   // Done
-  bind(count_locking);
-  dec_held_monitor_count(Rmark /*tmp*/);
+  if (LockingMode == LM_LEGACY) {
+    bind(count_locking);
+    dec_held_monitor_count(Rmark /*tmp*/);
+  }
   bind(done);
 }
 

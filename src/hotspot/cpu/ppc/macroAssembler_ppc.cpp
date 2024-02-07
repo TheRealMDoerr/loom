@@ -2252,7 +2252,7 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
   } else {
     assert(LockingMode == LM_LIGHTWEIGHT, "must be");
     lightweight_lock(oop, displaced_header, temp, done);
-    b(count_locking);
+    b(done);
   }
 
   // Handle existing monitor.
@@ -2276,7 +2276,7 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
     // Store a non-null value into the box.
     std(box, BasicLock::displaced_header_offset_in_bytes(), box);
   }
-  beq(flag, count_locking);
+  beq(flag, done);
 
   // Check for recursive locking.
   cmpd(flag, current_header, thread_id);
@@ -2287,12 +2287,14 @@ void MacroAssembler::compiler_fast_lock_object(ConditionRegister flag, Register 
   ld(recursions, in_bytes(ObjectMonitor::recursions_offset() - ObjectMonitor::owner_offset()), temp);
   addi(recursions, recursions, 1);
   std(recursions, in_bytes(ObjectMonitor::recursions_offset() - ObjectMonitor::owner_offset()), temp);
-  b(done);
 
   // flag == EQ indicates success, increment held monitor count
   // flag == NE indicates failure
-  bind(count_locking);
-  inc_held_monitor_count(temp);
+  if (LockingMode == LM_LEGACY) {
+    b(done);
+    bind(count_locking);
+    inc_held_monitor_count(temp);
+  }
   bind(done);
 }
 
@@ -2339,7 +2341,7 @@ void MacroAssembler::compiler_fast_unlock_object(ConditionRegister flag, Registe
   } else {
     assert(LockingMode == LM_LIGHTWEIGHT, "must be");
     lightweight_unlock(oop, current_header, done);
-    b(count_locking);
+    b(done);
   }
 
   // Handle existing monitor.
@@ -2376,8 +2378,11 @@ void MacroAssembler::compiler_fast_unlock_object(ConditionRegister flag, Registe
 
   // flag == EQ indicates success, decrement held monitor count
   // flag == NE indicates failure
-  bind(count_locking);
-  dec_held_monitor_count(temp);
+  if (LockingMode == LM_LEGACY) {
+    b(done);
+    bind(count_locking);
+    dec_held_monitor_count(temp);
+  }
   bind(done);
 }
 

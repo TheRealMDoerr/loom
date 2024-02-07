@@ -981,7 +981,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
 
     if (LockingMode == LM_LIGHTWEIGHT) {
       lightweight_lock(object, /* mark word */ header, tmp, slow_case);
-      b(count_locking);
+      b(done);
     } else if (LockingMode == LM_LEGACY) {
 
       // Set displaced_header to be (markWord of object | UNLOCK_VALUE).
@@ -1050,11 +1050,14 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
     } else {
       call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorenter), monitor);
     }
-    b(done);
     // }
-    align(32, 12);
-    bind(count_locking);
-    inc_held_monitor_count(current_header /*tmp*/);
+
+    if (LockingMode == LM_LEGACY) {
+      b(done);
+      align(32, 12);
+      bind(count_locking);
+      inc_held_monitor_count(current_header /*tmp*/);
+    }
     bind(done);
   }
 }
@@ -1130,6 +1133,7 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
       andi_(R0, header, markWord::monitor_value);
       bne(CCR0, slow_case);
       lightweight_unlock(object, header, slow_case);
+      b(free_slot);
     } else {
       addi(object_mark_addr, object, oopDesc::mark_offset_in_bytes());
 
@@ -1145,8 +1149,8 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
                MacroAssembler::cmpxchgx_hint_release_lock(),
                noreg,
                &slow_case);
+      b(count_locking);
     }
-    b(count_locking);
 
     // } else {
     //   // Slow path.
@@ -1162,8 +1166,10 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
 
     // Exchange worked, do monitor->set_obj(nullptr);
     align(32, 12);
-    bind(count_locking);
-    dec_held_monitor_count(current_header /*tmp*/);
+    if (LockingMode == LM_LEGACY) {
+      bind(count_locking);
+      dec_held_monitor_count(current_header /*tmp*/);
+    }
     bind(free_slot);
     li(R0, 0);
     std(R0, in_bytes(BasicObjectLock::obj_offset()), monitor);
