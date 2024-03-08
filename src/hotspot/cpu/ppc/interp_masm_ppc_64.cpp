@@ -961,8 +961,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
     const Register current_header   = R9_ARG7;
     const Register tmp              = R10_ARG8;
 
-    Label count_locking, done;
-    Label cas_failed, slow_case;
+    Label count_locking, done, slow_case, cas_failed;
 
     assert_different_registers(header, object_mark_addr, current_header, tmp);
 
@@ -977,7 +976,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
 
     if (LockingMode == LM_LIGHTWEIGHT) {
       lightweight_lock(object, header, tmp, slow_case);
-      b(count_locking);
+      b(done);
     } else if (LockingMode == LM_LEGACY) {
       // Load markWord from object into header.
       ld(header, oopDesc::mark_offset_in_bytes(), object);
@@ -1033,7 +1032,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
       // header indicating it is a recursive lock.
       bne(CCR0, slow_case);
       std(R0/*==0!*/, mark_offset, monitor);
-      b(count_locking);
+      b(done);
     }
 
     // } else {
@@ -1048,11 +1047,14 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
     } else {
       call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorenter), monitor);
     }
-    b(done);
     // }
-    align(32, 12);
-    bind(count_locking);
-    inc_held_monitor_count(current_header /*tmp*/);
+
+    if (LockingMode == LM_LEGACY) {
+      b(done);
+      align(32, 12);
+      bind(count_locking);
+      inc_held_monitor_count(current_header /*tmp*/);
+    }
     bind(done);
   }
 }
@@ -1087,8 +1089,7 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
     const Register object_mark_addr = R9_ARG7;
     const Register current_header   = R10_ARG8;
 
-    Label free_slot;
-    Label slow_case;
+    Label count_locking, done, slow_case, free_slot;
 
     assert_different_registers(object, header, object_mark_addr, current_header);
 
@@ -1113,6 +1114,7 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
 
     if (LockingMode == LM_LIGHTWEIGHT) {
       lightweight_unlock(object, header, slow_case);
+      b(free_slot);
     } else {
       addi(object_mark_addr, object, oopDesc::mark_offset_in_bytes());
 
@@ -1128,8 +1130,8 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
                MacroAssembler::cmpxchgx_hint_release_lock(),
                noreg,
                &slow_case);
+      b(count_locking);
     }
-    b(free_slot);
 
     // } else {
     //   // Slow path.
@@ -1141,15 +1143,17 @@ void InterpreterMacroAssembler::unlock_object(Register monitor) {
     call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::monitorexit), monitor);
     // }
 
-    Label done;
     b(done); // Monitor register may be overwritten! Runtime has already freed the slot.
 
     // Exchange worked, do monitor->set_obj(nullptr);
     align(32, 12);
+    if (LockingMode == LM_LEGACY) {
+      bind(count_locking);
+      dec_held_monitor_count(current_header /*tmp*/);
+    }
     bind(free_slot);
     li(R0, 0);
     std(R0, in_bytes(BasicObjectLock::obj_offset()), monitor);
-    dec_held_monitor_count(current_header /*tmp*/);
     bind(done);
   }
 }

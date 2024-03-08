@@ -72,7 +72,7 @@ void C1_MacroAssembler::verified_entry(bool breakAtEntry) {
 void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox, Register Rscratch, Label& slow_case) {
   assert_different_registers(Rmark, Roop, Rbox, Rscratch);
 
-  Label done, cas_failed, slow_int;
+  Label count_locking, done, slow_int, cas_failed;
 
   // The following move must be the first instruction of emitted since debug
   // information may be generated for it.
@@ -93,6 +93,7 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
 
   if (LockingMode == LM_LIGHTWEIGHT) {
     lightweight_lock(Roop, Rmark, Rscratch, slow_int);
+    b(done);
   } else if (LockingMode == LM_LEGACY) {
     // ... and mark it unlocked.
     ori(Rmark, Rmark, markWord::unlocked_value);
@@ -114,8 +115,8 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
              /*check without membar and ldarx first*/true);
     // If compare/exchange succeeded we found an unlocked object and we now have locked it
     // hence we are done.
+    b(count_locking);
   }
-  b(done);
 
   bind(slow_int);
   b(slow_case); // far
@@ -127,18 +128,21 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
     load_const_optimized(R0, (~(os::vm_page_size()-1) | markWord::lock_mask_in_place));
     and_(R0/*==0?*/, Rscratch, R0);
     std(R0/*==0, perhaps*/, BasicLock::displaced_header_offset_in_bytes(), Rbox);
-    bne(CCR0, slow_int);
+    beq(CCR0, done);
+    b(slow_case); // far
+
+    bind(count_locking);
+    inc_held_monitor_count(Rmark /*tmp*/);
   }
 
   bind(done);
-  inc_held_monitor_count(Rmark /*tmp*/);
 }
 
 
 void C1_MacroAssembler::unlock_object(Register Rmark, Register Roop, Register Rbox, Label& slow_case) {
   assert_different_registers(Rmark, Roop, Rbox);
 
-  Label slow_int, done;
+  Label count_locking, done, slow_int;
 
   Address mark_addr(Roop, oopDesc::mark_offset_in_bytes());
   assert(mark_addr.disp() == 0, "cas must take a zero displacement");
@@ -156,6 +160,7 @@ void C1_MacroAssembler::unlock_object(Register Rmark, Register Roop, Register Rb
 
   if (LockingMode == LM_LIGHTWEIGHT) {
     lightweight_unlock(Roop, Rmark, slow_int);
+    b(done);
   } else if (LockingMode == LM_LEGACY) {
     // Check if it is still a light weight lock, this is is true if we see
     // the stack address of the basicLock in the markWord of the object.
@@ -168,14 +173,17 @@ void C1_MacroAssembler::unlock_object(Register Rmark, Register Roop, Register Rb
              MacroAssembler::cmpxchgx_hint_release_lock(),
              noreg,
              &slow_int);
+    b(count_locking);
   }
-  b(done);
   bind(slow_int);
   b(slow_case); // far
 
   // Done
+  if (LockingMode == LM_LEGACY) {
+    bind(count_locking);
+    dec_held_monitor_count(Rmark /*tmp*/);
+  }
   bind(done);
-  dec_held_monitor_count(Rmark /*tmp*/);
 }
 
 
