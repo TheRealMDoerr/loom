@@ -72,7 +72,11 @@ void FreezeBase::adjust_interpreted_frame_unextended_sp(frame& f) {
 }
 
 inline void FreezeBase::prepare_freeze_interpreted_top_frame(const frame& f) {
-  Unimplemented();
+  //tty->print_cr("prepare_freeze_interpreted_top_frame");
+  //f.print_value();
+  // nothing to do
+  DEBUG_ONLY( intptr_t* lspp = (intptr_t*) &(f.get_ijava_state()->top_frame_sp); )
+  assert(*lspp == f.unextended_sp() - f.fp(), "should be " INTPTR_FORMAT " usp:" INTPTR_FORMAT " fp:" INTPTR_FORMAT, *lspp, p2i(f.unextended_sp()), p2i(f.fp()));
 }
 
 inline void FreezeBase::relativize_interpreted_frame_metadata(const frame& f, const frame& hf) {
@@ -484,8 +488,14 @@ inline frame ThawBase::new_entry_frame() {
 template<typename FKind> frame ThawBase::new_stack_frame(const frame& hf, frame& caller, bool bottom) {
   assert(FKind::is_instance(hf), "");
 
-  assert(is_aligned(caller.fp(), frame::frame_alignment), "");
-  assert(is_aligned(caller.sp(), frame::frame_alignment), "");
+  assert(is_aligned(caller.fp(), frame::frame_alignment), PTR_FORMAT, p2i(caller.fp()));
+  if (!is_aligned(caller.sp(), frame::frame_alignment)) {
+    tty->print_cr("new_stack_frame:");
+    hf.print_value();
+    tty->print_cr("caller:");
+    caller.print_value();
+  }
+  assert(is_aligned(caller.sp(), frame::frame_alignment), PTR_FORMAT, p2i(caller.sp()));
   if (FKind::interpreted) {
     // Note: we have to overlap with the caller, at least if it is interpreted, to match the
     // max_thawing_size calculation during freeze. See also comment above.
@@ -514,7 +524,7 @@ template<typename FKind> frame ThawBase::new_stack_frame(const frame& hf, frame&
     return f;
   } else {
     int fsize = FKind::size(hf);
-    int argsize = hf.compiled_frame_stack_argsize();
+    int argsize = FKind::stack_argsize(hf);
     intptr_t* frame_sp = caller.sp() - fsize;
 
     if ((bottom && argsize > 0) || caller.is_interpreted_frame()) {
@@ -547,14 +557,58 @@ inline void ThawBase::derelativize_interpreted_frame_metadata(const frame& hf, c
   // Keep top_frame_sp relativized.
 }
 
-inline intptr_t* ThawBase::push_resume_adapter(frame& top, bool is_interpreted_frame) {
-  Unimplemented();
-  return nullptr;
+inline intptr_t* ThawBase::push_resume_adapter(frame& top) {
+  intptr_t* sp = top.sp();
+  intptr_t* fp = top.fp();
+  bool interpreted = top.is_interpreted_frame();
+  address pc = interpreted ? Interpreter::cont_resume_interpreter_adapter()
+                           : StubRoutines::cont_resume_compiler_adapter();
+
+  //Unimplemented();
+  sp -= frame::metadata_words;
+  *(address*)(sp - frame::sender_sp_ret_address_offset()) = pc;
+
+  log_develop_trace(continuations, preempt)("push_preempt_rerun_%s_adapter() initial sp: " INTPTR_FORMAT " final sp: " INTPTR_FORMAT " fp: " INTPTR_FORMAT,
+    interpreted ? "interpreter" : "safepointblob", p2i(sp + frame::metadata_words), p2i(sp), p2i(fp));
+
+  return sp;
 }
 
 inline intptr_t* ThawBase::push_resume_monitor_operation(stackChunkOop chunk) {
-  Unimplemented();
-  return nullptr;
+  frame enterSpecial = new_entry_frame();
+  // Compute stack addresses as needed below
+  intptr_t* enterSpecial_sp = enterSpecial.sp();
+  intptr_t* enterSpecial_fp = enterSpecial.fp();
+  intptr_t* return_barrier_sp = enterSpecial_sp - frame::metadata_words;
+  intptr_t* monitorenter_redo_sp = return_barrier_sp - (frame::metadata_words + 2);
+  assert(is_aligned(monitorenter_redo_sp, StackAlignmentInBytes), "sanity");
+
+  // First push the return barrier frame
+  frame::java_abi* return_barrier_frame = (frame::java_abi*)return_barrier_sp;
+  return_barrier_frame->lr = (uintptr_t)StubRoutines::cont_returnBarrier();
+  return_barrier_frame->callers_sp = (uint64_t)enterSpecial_fp;
+
+  // Now push the ObjectWaiter*
+  monitorenter_redo_sp[frame::metadata_words + 1] = (intptr_t)chunk->object_waiter(); // alignment
+  monitorenter_redo_sp[frame::metadata_words + 0] = (intptr_t)chunk->object_waiter();
+
+  // Finally arrange to return to the monitorenter_redo stub
+  frame::java_abi* monitorenter_redo_frame = (frame::java_abi*)monitorenter_redo_sp;
+  monitorenter_redo_frame->lr = (uintptr_t)StubRoutines::cont_resume_monitor_operation();
+  monitorenter_redo_frame->callers_sp = (uint64_t)enterSpecial_fp;
+  log_develop_trace(continuations, preempt)("push_preempt_monitorenter_redo initial sp: " INTPTR_FORMAT " final sp: " INTPTR_FORMAT, p2i(enterSpecial_sp), p2i(monitorenter_redo_sp));
+
+#if 0
+  tty->print_cr("push_preempt_monitorenter_redo");
+  enterSpecial.print_on(tty);
+  for (intptr_t* p = enterSpecial.fp(); p >= monitorenter_redo_sp ; p--) {
+    tty->print(PTR_FORMAT ": " PTR_FORMAT, p2i(p), *p);
+    if (p == enterSpecial_sp || p == return_barrier_sp || p == monitorenter_redo_sp) tty->print_cr(" backlink: " PTR_FORMAT, **(intptr_t**)p);
+    else if (p == enterSpecial_sp + 2 || p == return_barrier_sp + 2 || p == monitorenter_redo_sp + 2) { CodeBlob* cb = CodeCache::find_blob(*((void**)p)); cb->print(); }
+    else tty->cr();
+  }
+#endif
+  return monitorenter_redo_sp;
 }
 
 inline void ThawBase::patch_pd(frame& f, const frame& caller) {
@@ -565,6 +619,16 @@ inline void ThawBase::patch_pd(frame& f, const frame& caller) {
 
 inline void ThawBase::patch_pd(frame& f, intptr_t* caller_sp) {
   Unimplemented();
+}
+
+inline void ThawBase::fix_native_return_pc_pd(frame& top) {
+  // Nothing to do since the last pc saved before making the call to
+  // JVM_MonitorWait() was already set to the correct resume pc. Just
+  // do some sanity check.
+#ifdef ASSERT
+  Method* method = top.is_interpreted_frame() ? top.interpreter_frame_method() : CodeCache::find_blob(top.pc())->as_nmethod()->method();
+  assert(method->is_object_wait0(), "");
+#endif
 }
 
 //

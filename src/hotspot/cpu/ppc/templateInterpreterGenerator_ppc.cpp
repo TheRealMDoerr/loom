@@ -699,7 +699,15 @@ address TemplateInterpreterGenerator::generate_safept_entry_for(TosState state, 
 }
 
 address TemplateInterpreterGenerator::generate_cont_resume_interpreter_adapter() {
-  return nullptr;
+  if (!Continuations::enabled()) return nullptr;
+  address start = __ pc();
+
+  __ restore_interpreter_state(R11_scratch1, false, true /*restore_top_frame_sp*/);
+  __ restore_LR_CR(R0);
+  __ untested("generate_cont_preempt_rerun_interpreter_adapter");
+  __ blr();
+
+  return start;
 }
 
 

@@ -4176,8 +4176,20 @@ void TemplateTable::monitorenter() {
   // This emits a single store.
   __ generate_stack_overflow_check(0);
 
+  // Check preemption
+  Label preempt;
+  __ lbz(Rscratch1, in_bytes(JavaThread::preempting_offset()), R16_thread);
+  __ cmpwi(CCR0, Rscratch1, 0);
+  __ bne(CCR0, preempt);
+
   // The bcp has already been incremented. Just need to dispatch to next instruction.
   __ dispatch_next(vtos);
+
+  __ align(32, 12);
+  __ bind(preempt);
+  __ load_const_optimized(Rscratch1, StubRoutines::cont_preempt_stub(), R0);
+  __ mtctr(Rscratch1);
+  __ bctr();
 }
 
 void TemplateTable::monitorexit() {

@@ -32,6 +32,13 @@
 #include "runtime/sharedRuntime.hpp"
 #include "utilities/align.hpp"
 
+#ifdef COMPILER1
+#include "c1/c1_Runtime1.hpp"
+#endif
+#ifdef COMPILER2
+#include "opto/runtime.hpp"
+#endif
+
 // Inline functions for ppc64 frames:
 
 // Initialize frame members (_sp must be given)
@@ -53,7 +60,15 @@ inline void frame::setup(kind knd) {
     // The back link for compiled frames on the heap is not valid
     if (is_heap_frame()) {
       // fp for interpreted frames should have been derelativized and passed to the constructor
-      assert(is_compiled_frame(), "");
+      assert(is_compiled_frame()
+#ifdef COMPILER1
+             || _cb == Runtime1::blob_for(Runtime1::monitorenter_id)
+             || _cb == Runtime1::blob_for(Runtime1::monitorenter_nofpu_id)
+#endif
+#ifdef COMPILER2
+             || _cb->code_begin() == OptoRuntime::complete_monitor_locking_Java()
+#endif
+             , "%s", _cb->name());
       // The back link for compiled frames on the heap is invalid.
       _fp = _unextended_sp + _cb->frame_size();
     } else {

@@ -2482,6 +2482,7 @@ void ThawBase::finalize_thaw(frame& entry, int argsize) {
 
   _cont.set_argsize(argsize);
   entry = new_entry_frame();
+  assert(is_aligned(entry.sp(), StackAlignmentInBytes), "sanity");
 
   assert(entry.sp() == _cont.entrySP(), "");
   assert(Continuation::is_continuation_enterSpecial(entry), "");

@@ -34,7 +34,10 @@ static inline intptr_t** link_address(const frame& f) {
 }
 
 static inline void patch_return_pc_with_preempt_stub(frame& f) {
-  Unimplemented();
+  // Patch the pc of the now old last Java frame (we already set the anchor to enterSpecial)
+  // so that when target goes back to Java it will actually return to the preempt cleanup stub.
+  uint64_t* ret_addr_ptr = &(f.own_abi()->lr);
+  *ret_addr_ptr = (uint64_t)StubRoutines::cont_preempt_stub();
 }
 
 inline int ContinuationHelper::frame_align_words(int size) {

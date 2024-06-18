@@ -180,7 +180,8 @@ static OopMap* generate_oop_map(StubAssembler* sasm, bool save_fpu_registers) {
 }
 
 static OopMap* save_live_registers(StubAssembler* sasm, bool save_fpu_registers = true,
-                                   Register ret_pc = noreg, int stack_preserve = 0) {
+                                   Register ret_pc = noreg, int stack_preserve = 0,
+                                   bool include_thread = false) {
   if (ret_pc == noreg) {
     ret_pc = R0;
     __ mflr(ret_pc);
@@ -197,7 +198,7 @@ static OopMap* save_live_registers(StubAssembler* sasm, bool save_fpu_registers 
   int i;
   for (i = 0; i < FrameMap::nof_cpu_regs; i++) {
     Register r = as_Register(i);
-    if (FrameMap::reg_needs_save(r)) {
+    if (FrameMap::reg_needs_save(r) || (include_thread && r == R16_thread)) {
       int sp_offset = cpu_reg_save_offsets[i];
       __ std(r, sp_offset, R1_SP);
     }
@@ -215,10 +216,11 @@ static OopMap* save_live_registers(StubAssembler* sasm, bool save_fpu_registers 
 }
 
 static void restore_live_registers(StubAssembler* sasm, Register result1, Register result2,
-                                   bool restore_fpu_registers = true) {
+                                   bool restore_fpu_registers = true, bool include_thread = false) {
   for (int i = 0; i < FrameMap::nof_cpu_regs; i++) {
     Register r = as_Register(i);
-    if (FrameMap::reg_needs_save(r) && r != result1 && r != result2) {
+    if ((FrameMap::reg_needs_save(r) || (include_thread && r == R16_thread)) &&
+        r != result1 && r != result2) {
       int sp_offset = cpu_reg_save_offsets[i];
       __ ld(r, sp_offset, R1_SP);
     }
@@ -244,7 +246,7 @@ void Runtime1::initialize_pd() {
 
   for (i = 0; i < FrameMap::nof_cpu_regs; i++) {
     Register r = as_Register(i);
-    if (FrameMap::reg_needs_save(r)) {
+    if (FrameMap::reg_needs_save(r) || (r == R16_thread)) {
       cpu_reg_save_offsets[i] = sp_offset;
       sp_offset += BytesPerWord;
     }
@@ -257,9 +259,14 @@ void Runtime1::initialize_pd() {
   frame_size_in_bytes = align_up(sp_offset, frame::alignment_in_bytes);
 }
 
+// return: offset in 64-bit words.
 uint Runtime1::runtime_blob_current_thread_offset(frame f) {
-  Unimplemented();
-  return 0;
+  CodeBlob* cb = f.cb();
+  assert(cb == Runtime1::blob_for(Runtime1::monitorenter_id) ||
+         cb == Runtime1::blob_for(Runtime1::monitorenter_nofpu_id), "must be");
+  assert(cb != nullptr && cb->is_runtime_stub(), "invalid frame");
+  int offset = cpu_reg_save_offsets[R16_thread->encoding()];
+  return offset / 2;   // SP offsets are in halfwords
 }
 
 OopMapSet* Runtime1::generate_exception_throw(StubAssembler* sasm, address target, bool has_argument) {
@@ -616,14 +623,14 @@ OopMapSet* Runtime1::generate_code_for(StubID id, StubAssembler* sasm) {
 
         int save_fpu_registers = (id == monitorenter_id);
         // Make a frame and preserve the caller's caller-save registers.
-        OopMap* oop_map = save_live_registers(sasm, save_fpu_registers);
+        OopMap* oop_map = save_live_registers(sasm, save_fpu_registers, noreg, 0, /* include_thread */ true);
 
         int call_offset = __ call_RT(noreg, noreg, CAST_FROM_FN_PTR(address, monitorenter), R4_ARG2, R5_ARG3);
 
         oop_maps = new OopMapSet();
         oop_maps->add_gc_map(call_offset, oop_map);
 
-        restore_live_registers(sasm, noreg, noreg, save_fpu_registers);
+        restore_live_registers(sasm, noreg, noreg, save_fpu_registers, /* include_thread */ true);
         __ blr();
       }
       break;

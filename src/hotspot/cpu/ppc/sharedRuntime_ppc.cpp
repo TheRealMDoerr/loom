@@ -1852,6 +1852,7 @@ static void gen_continuation_enter(MacroAssembler* masm,
   // --- Thawing path
 
   __ bind(L_thaw);
+  ContinuationEntry::_thaw_call_pc_offset = __ pc() - start;
   __ add_const_optimized(R0, R29_TOC, MacroAssembler::offset_to_global_toc(StubRoutines::cont_thaw()));
   __ mtctr(R0);
   __ bctrl();
@@ -1967,6 +1968,10 @@ static void gen_continuation_yield(MacroAssembler* masm,
   __ load_const_optimized(tmp, StubRoutines::forward_exception_entry(), R0);
   __ mtctr(tmp);
   __ bctr();
+}
+
+void SharedRuntime::continuation_enter_cleanup(MacroAssembler* masm) {
+  ::continuation_enter_cleanup(masm);
 }
 
 // ---------------------------------------------------------------------------

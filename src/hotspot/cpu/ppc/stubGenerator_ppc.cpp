@@ -4675,6 +4675,121 @@ address generate_lookup_secondary_supers_table_stub(u1 super_klass_index) {
     return generate_cont_thaw("Cont thaw return barrier exception", Continuation::thaw_return_barrier_exception);
   }
 
+  address generate_cont_preempt_stub() {
+    if (!Continuations::enabled()) return nullptr;
+    StubCodeMark mark(this, "StubRoutines","Continuation preempt stub");
+    address start = __ pc();
+
+    __ reset_last_Java_frame();
+
+    // reset _preempting flag
+#ifdef ASSERT
+    { Label L;
+      __ lbz(R11_scratch1, in_bytes(JavaThread::preempting_offset()), R16_thread);
+      __ cmpwi(CCR0, R11_scratch1, 0);
+      __ bne(CCR0, L);
+      __ stop("preempting flag should be set");
+      __ bind(L);
+    }
+#endif
+    __ li(R11_scratch1, 0); // false
+    __ stb(R11_scratch1, in_bytes(JavaThread::preempting_offset()), R16_thread);
+
+    // Set rsp to enterSpecial frame
+    __ ld_ptr(R1_SP, JavaThread::cont_entry_offset(), R16_thread);
+
+    Label preemption_cancelled;
+    __ lbz(R11_scratch1, in_bytes(JavaThread::preemption_cancelled_offset()), R16_thread);
+    __ cmpwi(CCR0, R11_scratch1, 0);
+    __ b(preemption_cancelled);
+    __ bne(CCR0, preemption_cancelled);
+
+    //__ untested("generate_cont_preempt_stub cleanup");
+    // Remove enterSpecial frame from the stack and return to Continuation.run()
+    SharedRuntime::continuation_enter_cleanup(_masm);
+    __ pop_frame();
+    __ restore_LR_CR(R11_scratch1);
+    __ blr();
+
+    __ bind(preemption_cancelled);
+    //__ untested("generate_cont_preempt_stub preemption_cancelled");
+    //__ add_const_optimized(R11_scratch1, R29_TOC, MacroAssembler::offset_to_global_toc(StubRoutines::cont_thaw()));
+    int simm16_offs = __ load_const_optimized(R11_scratch1, &ContinuationEntry::_thaw_call_pc, R0, true);
+    __ ld(R11_scratch1, simm16_offs, R11_scratch1);
+    __ mtctr(R11_scratch1);
+    __ bctr();
+
+    return start;
+  }
+
+  address generate_cont_resume_compiler_adapter() {
+    if (!Continuations::enabled()) return nullptr;
+    StubCodeMark mark(this, "StubRoutines", "Continuation preempt safepoint blob adapter");
+    address start = __ pc();
+
+    __ untested("generate_cont_preempt_rerun_compiler_adapter");
+    // The safepoint blob handler expects that R31, being a callee saved register, will be preserved
+    // during the VM call. It is used to check if the return pc back to Java was modified in the runtime.
+    // If it wasn't, the return pc is modified so on return the poll instruction is skipped. Saving this
+    // additional value of R31 during freeze will complicate too much the code, so we just zero it here
+    // so that the comparison fails and the skip is not attempted in case the pc was indeed changed.
+    // See SharedRuntime::generate_handler_blob.
+    __ li(R31, 0);
+
+    __ pop_frame();
+    __ restore_LR_CR(R11_scratch1);
+    __ blr();
+
+    return start;
+  }
+
+  address generate_cont_resume_monitor_operation() {
+    if (!Continuations::enabled()) return nullptr;
+    StubCodeMark mark(this, "StubRoutines","Continuation monitorenter redo stub");
+    address start = __ pc();
+
+    __ unimplemented();
+#if 0
+    const Register mon_reg = c_rarg1;
+    __ ldr(mon_reg, __ post(sp, 2 * wordSize));
+
+#ifdef ASSERT
+    { Label L;
+      __ cbnz(mon_reg, L);
+      __ stop("ObjectMonitor to use is null");
+      __ bind(L);
+    }
+#endif // ASSERT
+
+    __ set_last_Java_frame(sp, rfp, lr, rscratch1);
+    __ mov(c_rarg0, rthread);
+    __ rt_call(CAST_FROM_FN_PTR(address, SharedRuntime::redo_monitorenter));
+    __ reset_last_Java_frame(true);
+
+    Label failAcquire;
+    __ ldrb(rscratch1, Address(rthread, JavaThread::preempting_offset()));
+    __ cbnz(rscratch1, failAcquire);
+    // We have the lock now, just return to caller (we will actually hit the
+    // return barrier to thaw more frames)
+
+    // ThawBase::push_preempt_monitorenter_redo set things up so that
+    // SP now points to {fp, lr}.
+    __ ldp(rfp, lr, Address(__ post(sp, 2 * wordSize)));
+    __ ret(lr);
+
+    __ bind(failAcquire);
+    __ strb(/*false*/zr, Address(rthread, JavaThread::preempting_offset()));
+    // Set sp to enterSpecial frame
+    __ ldr(rscratch1, Address(rthread, JavaThread::cont_entry_offset()));
+    __ mov(sp, rscratch1);
+    // Remove enterSpecial frame from the stack and return to Continuation.run()
+    SharedRuntime::continuation_enter_cleanup(_masm);
+    __ leave();
+    __ ret(lr);
+#endif
+    return start;
+  }
+
 #if INCLUDE_JFR
 
   // For c2: c_rarg0 is junk, call to runtime to write a checkpoint.
@@ -4812,6 +4927,9 @@ address generate_lookup_secondary_supers_table_stub(u1 super_klass_index) {
     StubRoutines::_cont_thaw          = generate_cont_thaw();
     StubRoutines::_cont_returnBarrier = generate_cont_returnBarrier();
     StubRoutines::_cont_returnBarrierExc = generate_cont_returnBarrier_exception();
+    StubRoutines::_cont_preempt_stub  = generate_cont_preempt_stub();
+    StubRoutines::_cont_resume_monitor_operation = generate_cont_resume_monitor_operation();
+    StubRoutines::_cont_resume_compiler_adapter = generate_cont_resume_compiler_adapter();
 
     JFR_ONLY(generate_jfr_stubs();)
   }
